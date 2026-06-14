@@ -4,7 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..config import GROUP_NAMES
-from ..teams import GROUPS
+from ..teams import GROUPS, power_of
+from .odds import implied_from_decimal, poisson_lambdas, probs_from_power
 
 
 def fixture_groups(fixtures: list[dict]) -> list[str]:
@@ -103,4 +104,57 @@ def project_qualifiers(fixtures: list[dict]) -> dict[tuple, str]:
     thirds.sort(key=_sort_key)
     for k, row in enumerate(thirds[:8]):
         out[("T", k)] = row.team
+    return out
+
+
+def expected_standings(fixtures: list[dict], power=power_of) -> dict[str, list[tuple]]:
+    """Projected FINAL group tables: finished games count their real result,
+    unplayed games contribute *expected* points/goals from the odds (or the
+    power model if a fixture has no odds).
+
+    Returns group -> [(team, exp_points, exp_gd, exp_gf), ...] best-first.
+    """
+    groups = {g: {t: [0.0, 0.0, 0.0] for t in group_members(fixtures, g)}
+              for g in fixture_groups(fixtures)}
+    for f in fixtures:
+        if f["stage"] != "group":
+            continue
+        table = groups.get(f.get("group"))
+        if table is None:
+            continue
+        h, a = f["home"], f["away"]
+        if h not in table or a not in table:
+            continue
+        if f["status"] == "FT" and f["home_goals"] is not None:
+            hg, ag = f["home_goals"], f["away_goals"]
+            hp, ap = (3, 0) if hg > ag else (0, 3) if hg < ag else (1, 1)
+            table[h][0] += hp; table[h][1] += hg - ag; table[h][2] += hg
+            table[a][0] += ap; table[a][1] += ag - hg; table[a][2] += ag
+        else:
+            p = (implied_from_decimal(f["odds"]) if f.get("odds")
+                 else probs_from_power(power(h), power(a)))
+            lam_h, lam_a = poisson_lambdas(power(h), power(a))
+            table[h][0] += 3 * p.home + p.draw; table[h][1] += lam_h - lam_a; table[h][2] += lam_h
+            table[a][0] += 3 * p.away + p.draw; table[a][1] += lam_a - lam_h; table[a][2] += lam_a
+
+    out: dict[str, list[tuple]] = {}
+    for g, table in groups.items():
+        rows = [(t, v[0], v[1], v[2]) for t, v in table.items()]
+        rows.sort(key=lambda r: (-r[1], -r[2], -r[3]))
+        out[g] = rows
+    return out
+
+
+def project_qualifiers_expected(fixtures: list[dict], power=power_of) -> dict[tuple, str]:
+    """Bracket slot→team mapping from the odds-projected final standings."""
+    tables = expected_standings(fixtures, power)
+    out: dict[tuple, str] = {}
+    thirds: list[tuple] = []
+    for g, rows in tables.items():
+        out[("W", g)] = rows[0][0]
+        out[("R", g)] = rows[1][0]
+        thirds.append(rows[2])
+    thirds.sort(key=lambda r: (-r[1], -r[2], -r[3]))
+    for k, row in enumerate(thirds[:8]):
+        out[("T", k)] = row[0]
     return out

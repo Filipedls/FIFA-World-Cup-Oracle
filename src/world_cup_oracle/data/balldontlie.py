@@ -16,34 +16,14 @@ from __future__ import annotations
 import requests
 
 from ..config import WORLD_CUP_SEASON
+from ..teams import canonical_name as canonical
 
 BASE_URL = "https://api.balldontlie.io/fifa/worldcup/v1"
 _TIMEOUT = 20
 
-# BALLDONTLIE name -> our canonical name in teams.py (only the ones that differ)
-_NAME_FIXUPS = {
-    "USA": "United States",
-    "United States of America": "United States",
-    "South Korea": "Korea Republic",
-    "Turkey": "Türkiye",
-    "Turkiye": "Türkiye",
-    "Ivory Coast": "Côte d'Ivoire",
-    "Cote d'Ivoire": "Côte d'Ivoire",
-    "Curacao": "Curaçao",
-    "Cape Verde": "Cabo Verde",
-    "IR Iran": "Iran",
-    "Czech Republic": "Czechia",
-}
-
 
 class BallDontLieError(RuntimeError):
     pass
-
-
-def canonical(name: str | None) -> str | None:
-    if not name:
-        return None
-    return _NAME_FIXUPS.get(name, name)
 
 
 def _get(path: str, key: str, params: dict) -> list[dict]:

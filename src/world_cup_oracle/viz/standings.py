@@ -10,8 +10,12 @@ _QUALIFY = "#1b5e20"   # top 2: through
 _PLAYOFF = "#5d4037"   # 3rd: maybe (best 8 thirds advance)
 
 
+# display order: Pts promoted to the second column (after Team)
+_COLUMN_ORDER = ["Team", "Pts", "P", "W", "D", "L", "GF", "GA", "GD", "Form"]
+
+
 def standings_dataframe(rows: list[TeamRow]) -> pd.DataFrame:
-    df = pd.DataFrame([r.as_dict() for r in rows])
+    df = pd.DataFrame([r.as_dict() for r in rows])[_COLUMN_ORDER]
     df.index = range(1, len(df) + 1)
     df.index.name = "#"
     return df

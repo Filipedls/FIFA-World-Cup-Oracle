@@ -36,24 +36,32 @@ With **no API key** the app runs on a built-in, deterministic **sample dataset**
 
 ### Live data
 
-Copy `.env.example` to `.env`, pick a provider and drop in a matching key:
+Data is assembled in two layers (`data/loader.py`): a **base source** for
+fixtures/standings/scorers, optionally enriched with a **betting-odds overlay**.
 
-```
-WORLD_CUP_DATA_SOURCE=balldontlie   # or: api_football
-WORLD_CUP_API_KEY=your_key_here
-```
+**Base source** — `WORLD_CUP_DATA_SOURCE`:
 
-Two providers are supported (`data/loader.py` dispatches on `WORLD_CUP_DATA_SOURCE`):
-
-| Source | Free tier covers 2026? | Odds? | Register |
+| Source | 2026 on free tier? | Key | Notes |
 |---|---|---|---|
-| **`balldontlie`** (default) | ✅ yes | ✅ yes | <https://app.balldontlie.io/> (FIFA API) |
-| `api_football` | ❌ free tier is 2022–2024 only | paid plans | <https://www.api-football.com/> |
+| **`worldcup26`** (default) | ✅ free, **no key** | none | community API; flaky uptime — retried & cached |
+| `balldontlie` | ❌ free tier is `/teams` only | paid | bundles odds too |
+| `api_football` | ❌ free tier is 2022–2024 | yes | — |
 
-The app pulls fixtures, odds and goalscorers live; any API error (bad key, a
-season your plan can't access, a network blip) degrades gracefully back to the
-cached or sample data with a visible warning. The key must belong to the chosen
-provider.
+**Odds overlay** (optional) — set `THE_ODDS_API_KEY` from
+<https://the-odds-api.com/> (free tier 500 req/mo) to attach real bookmaker
+odds to every matching fixture. Without it, win probabilities come from the
+Poisson power model.
+
+So the default **fully-free** setup needs no key at all; add a free Odds API key
+to get real betting odds:
+
+```
+WORLD_CUP_DATA_SOURCE=worldcup26
+# THE_ODDS_API_KEY=your_odds_api_key
+```
+
+Any failure (key, plan, network, flaky server) degrades gracefully: last good
+cache first, then the offline sample, always with a visible note.
 
 ## Tests
 
@@ -67,10 +75,13 @@ poetry run pytest
 src/world_cup_oracle/
   config.py            # API + tournament-format + simulation + cache constants
   teams.py             # the 12 groups, team codes and power ratings
+  env.py               # load .env before config reads it
   data/
-    loader.py          # dispatch on WORLD_CUP_DATA_SOURCE; else sample (never raises)
-    balldontlie.py     # live client (default) -> normalised dataset
-    api_football.py    # live client (alternative) -> normalised dataset
+    loader.py          # base source + odds overlay + cache (never raises)
+    worldcup26.py      # base source: free, no key (default)
+    balldontlie.py     # base source: paid key
+    api_football.py    # base source: key, 2022-2024 free
+    the_odds_api.py    # odds overlay (THE_ODDS_API_KEY)
     sample.py          # offline dataset generator
     cache.py           # disk cache + "a game has ended" invalidation
   models/

@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from ..config import GOAL_BASE, GOAL_POWER_SCALE
+from ..config import GOAL_BASE, GOAL_POWER_SCALE, KNOCKOUT_SCALE
 
 
 @dataclass(frozen=True)
@@ -76,6 +76,12 @@ def _poisson_pmf(lam: float, max_k: int) -> list[float]:
     for k in range(max_k + 1):
         out.append(math.exp(-lam) * lam**k / math.factorial(k))
     return out
+
+
+def knockout_win_prob(power_a: float, power_b: float) -> float:
+    """Probability team A beats team B in a knockout tie (no draw): a logistic
+    on the power-rating gap. Matches the model used by the simulation."""
+    return 1.0 / (1.0 + math.exp(-KNOCKOUT_SCALE * (power_a - power_b)))
 
 
 def odds_from_power(power_home: float, power_away: float,

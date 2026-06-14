@@ -61,6 +61,31 @@ GROUPS: dict[str, list[str]] = groups()
 # under a name not in this table, or a play-off qualifier we didn't anticipate).
 DEFAULT_POWER = 0.50
 
+# Map common provider spellings to our canonical names so power ratings and
+# group membership line up across data sources.
+_NAME_ALIASES = {
+    "USA": "United States",
+    "United States of America": "United States",
+    "South Korea": "Korea Republic",
+    "Korea, Republic of": "Korea Republic",
+    "Turkey": "Türkiye",
+    "Turkiye": "Türkiye",
+    "Ivory Coast": "Côte d'Ivoire",
+    "Cote d'Ivoire": "Côte d'Ivoire",
+    "Curacao": "Curaçao",
+    "Cape Verde": "Cabo Verde",
+    "Cape Verde Islands": "Cabo Verde",
+    "IR Iran": "Iran",
+    "Czech Republic": "Czechia",
+}
+
+
+def canonical_name(name: str | None) -> str | None:
+    """Normalise a team name to our canonical spelling (pass-through if known)."""
+    if not name:
+        return name
+    return _NAME_ALIASES.get(name.strip(), name.strip())
+
 
 def power_of(name: str) -> float:
     """Power rating for a team name, falling back to a neutral default so the

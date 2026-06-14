@@ -15,11 +15,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..config import (DEFAULT_SIMULATIONS, SIM_SEED, STAGE_LABELS,
-                      THIRD_PLACE_QUALIFIERS)
-from ..teams import power_of
+from ..config import (DEFAULT_SIMULATIONS, KNOCKOUT_SCALE, SIM_SEED,
+                      STAGE_LABELS, THIRD_PLACE_QUALIFIERS)
 from . import bracket
 from .odds import implied_from_decimal, poisson_lambdas, probs_from_power
+from .ratings import compute_ratings
 from .standings import fixture_groups, group_members
 
 
@@ -28,17 +28,23 @@ class SimulationResult:
     stage_probs: dict[str, dict[str, float]]   # team -> {stage label: prob}
     expected_games: dict[str, float]           # team -> expected matches played
     n_sims: int
+    # most-frequent occupant of each bracket slot across all simulations,
+    # keyed like project_qualifiers: ("W", "A") / ("R", "B") / ("T", k)
+    most_likely_slots: dict[tuple, str]
 
     def champion_odds(self) -> list[tuple[str, float]]:
         return sorted(((t, p["Winner"]) for t, p in self.stage_probs.items()),
                       key=lambda kv: -kv[1])
 
+    def most_likely_qualifiers(self) -> dict[tuple, str]:
+        return self.most_likely_slots
 
-def _match_outcome_probs(fx: dict) -> tuple[float, float, float]:
+
+def _match_outcome_probs(fx: dict, pw) -> tuple[float, float, float]:
     if fx.get("odds"):
         p = implied_from_decimal(fx["odds"])
         return p.home, p.draw, p.away
-    p = probs_from_power(power_of(fx["home"]), power_of(fx["away"]))
+    p = probs_from_power(pw(fx["home"]), pw(fx["away"]))
     return p.home, p.draw, p.away
 
 
@@ -66,7 +72,10 @@ def run(fixtures: list[dict], n_sims: int = DEFAULT_SIMULATIONS) -> SimulationRe
     teams = sorted({t for members in groups.values() for t in members}
                    | {f[side] for f in fixtures for side in ("home", "away") if f.get(side)})
     idx = {t: i for i, t in enumerate(teams)}
-    power = np.array([power_of(t) for t in teams])
+    # data-driven strength (odds + results + prior); falls back to 0.5
+    ratings = compute_ratings(fixtures)
+    pw = lambda t: ratings.get(t, 0.5)  # noqa: E731
+    power = np.array([pw(t) for t in teams])
     n_teams = len(teams)
     group_letters = list(groups)
 
@@ -82,9 +91,9 @@ def run(fixtures: list[dict], n_sims: int = DEFAULT_SIMULATIONS) -> SimulationRe
             hg = np.full(n_sims, fx["home_goals"])
             ag = np.full(n_sims, fx["away_goals"])
         else:
-            ph, pd, pa = _match_outcome_probs(fx)
+            ph, pd, pa = _match_outcome_probs(fx, pw)
             outcome = rng.choice(3, size=n_sims, p=[ph, pd, pa])
-            lam_h, lam_a = poisson_lambdas(power_of(fx["home"]), power_of(fx["away"]))
+            lam_h, lam_a = poisson_lambdas(pw(fx["home"]), pw(fx["away"]))
             hg, ag = _sample_scoreline(outcome, lam_h, lam_a, rng)
         pts[h] += np.where(hg > ag, 3, np.where(hg == ag, 1, 0))
         pts[a] += np.where(ag > hg, 3, np.where(hg == ag, 1, 0))
@@ -166,10 +175,46 @@ def run(fixtures: list[dict], n_sims: int = DEFAULT_SIMULATIONS) -> SimulationRe
         # 3 group games are always played; add expected knockout games
         expected_games[t] = 3.0 + float(games[i].mean())
 
-    return SimulationResult(stage_probs, expected_games, n_sims)
+    ml_slots = _most_likely_slots(group_letters, winners, runners,
+                                  qualifying_thirds, teams, n_teams)
+    return SimulationResult(stage_probs, expected_games, n_sims, ml_slots)
+
+
+def _most_likely_slots(group_letters, winners, runners, qualifying_thirds,
+                       teams, n_teams) -> dict[tuple, str]:
+    """Pick each bracket slot's most-frequent occupant across simulations:
+    the modal group winner, modal runner-up, and the 8 most-frequent
+    third-place qualifiers."""
+    slots: dict[tuple, str] = {}
+    chosen: set[str] = set()
+    for g in group_letters:
+        w_idx = int(np.bincount(winners[g], minlength=n_teams).argmax())
+        w_team = teams[w_idx]
+        slots[("W", g)] = w_team
+        # most-frequent runner-up that isn't the winner pick
+        for r_idx in np.argsort(-np.bincount(runners[g], minlength=n_teams)):
+            if teams[int(r_idx)] != w_team:
+                slots[("R", g)] = teams[int(r_idx)]
+                break
+        chosen.update({slots[("W", g)], slots[("R", g)]})
+
+    third_counts = np.zeros(n_teams)
+    for arr in qualifying_thirds:
+        third_counts += np.bincount(arr, minlength=n_teams)
+    k = 0
+    for i in np.argsort(-third_counts):
+        team = teams[int(i)]
+        if team in chosen:
+            continue
+        slots[("T", k)] = team
+        chosen.add(team)
+        k += 1
+        if k >= THIRD_PLACE_QUALIFIERS:
+            break
+    return slots
 
 
 def _two_way(power_a: np.ndarray, power_b: np.ndarray) -> np.ndarray:
-    """Probability team A beats team B in a knockout (no draws)."""
-    # logistic on the power gap; ties broken in proportion to strength.
-    return 1.0 / (1.0 + np.exp(-4.0 * (power_a - power_b)))
+    """Probability team A beats team B in a knockout (no draws); vectorised twin
+    of :func:`odds.knockout_win_prob` (same logistic + KNOCKOUT_SCALE)."""
+    return 1.0 / (1.0 + np.exp(-KNOCKOUT_SCALE * (power_a - power_b)))

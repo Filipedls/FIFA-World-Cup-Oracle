@@ -35,16 +35,18 @@ def project_scorers(scorers: list[dict], fixtures: list[dict],
     for s in scorers:
         team = s["team"]
         gp = played.get(team, 0)
-        # shrink the raw goals/game toward PRIOR_RATE to tame tiny denominators
-        rate = (s["goals"] + PRIOR_RATE * PRIOR_WEIGHT) / (gp + PRIOR_WEIGHT)
+        raw_rate = s["goals"] / gp if gp else 0.0
+        # the projection uses a rate shrunk toward PRIOR_RATE so tiny
+        # denominators (e.g. 2 goals in 1 game) don't explode the forecast
+        shrunk_rate = (s["goals"] + PRIOR_RATE * PRIOR_WEIGHT) / (gp + PRIOR_WEIGHT)
         exp_games = expected_games.get(team, 3.0)
-        projected = rate * exp_games
+        projected = shrunk_rate * exp_games
         rows.append({
             "Player": s["player"],
             "Team": team,
             "Goals": s["goals"],
             "Team games": gp,
-            "Goals/game": round(rate, 2),
+            "Goals/game": round(raw_rate, 2),
             "Proj. team games": round(exp_games, 1),
             "Projected goals": round(projected, 1),
         })
