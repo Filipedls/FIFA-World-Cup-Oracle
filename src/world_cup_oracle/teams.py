@@ -92,3 +92,32 @@ def power_of(name: str) -> float:
     models never crash on an unrecognised team."""
     team = TEAMS.get(name)
     return team.power if team else DEFAULT_POWER
+
+
+# Confederation per (canonical) team name — used for confederation-aware bracket
+# seeding. Covers the roster above plus likely qualifiers from the real draw.
+_CONFEDERATION = {
+    "UEFA": ["Denmark", "Switzerland", "Italy", "Scotland", "Germany", "Netherlands",
+             "Sweden", "Belgium", "Spain", "France", "Norway", "Austria", "Portugal",
+             "England", "Croatia", "Bosnia and Herzegovina", "Czechia", "Ukraine",
+             "Poland", "Albania", "Romania", "Slovakia", "Türkiye", "Wales",
+             "Northern Ireland", "Republic of Ireland", "North Macedonia", "Serbia"],
+    "CONMEBOL": ["Brazil", "Argentina", "Uruguay", "Colombia", "Ecuador", "Paraguay",
+                 "Peru", "Chile", "Bolivia", "Venezuela"],
+    "CONCACAF": ["Mexico", "Canada", "United States", "Costa Rica", "Panama", "Haiti",
+                 "Curaçao", "Jamaica", "Honduras"],
+    "CAF": ["South Africa", "Morocco", "Côte d'Ivoire", "Tunisia", "Egypt", "Senegal",
+            "Algeria", "Ghana", "Cabo Verde", "Cameroon", "Nigeria", "Mali",
+            "Democratic Republic of the Congo"],
+    "AFC": ["Korea Republic", "Qatar", "Australia", "Japan", "Iran", "Saudi Arabia",
+            "Iraq", "Jordan", "Uzbekistan"],
+    "OFC": ["New Zealand"],
+}
+_TEAM_CONFEDERATION: dict[str, str] = {
+    team: conf for conf, members in _CONFEDERATION.items() for team in members
+}
+
+
+def confederation_of(name: str | None) -> str:
+    """Confederation for a team name ('?' if unknown — treated as no clash)."""
+    return _TEAM_CONFEDERATION.get(name, "?") if name else "?"

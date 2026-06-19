@@ -30,5 +30,5 @@ def test_app_renders_core_widgets():
     at = AppTest.from_file(APP, default_timeout=180)
     at.run()
     assert at.title[0].value.startswith("🏆")
-    assert len(at.tabs) == 6            # Stats / Groups / Bracket / Matches / Scorers / Advancement
+    assert len(at.tabs) == 7            # Stats/Groups/Bracket/Matches/Scorers/Advancement/Config
     assert len(at.dataframe) >= 12      # 12 group tables at minimum

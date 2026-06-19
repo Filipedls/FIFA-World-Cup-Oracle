@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 
 from ..config import GROUP_NAMES
 from ..teams import GROUPS, power_of
+from . import bracket
 from .odds import implied_from_decimal, poisson_lambdas, probs_from_power
 
 
@@ -89,22 +90,22 @@ def compute_all_groups(fixtures: list[dict]) -> dict[str, list[TeamRow]]:
     return {g: compute_group(fixtures, g) for g in fixture_groups(fixtures)}
 
 
+def _third_strength(row: TeamRow) -> float:
+    return row.points * 1e6 + row.gd * 1e3 + row.gf
+
+
 def project_qualifiers(fixtures: list[dict]) -> dict[tuple, str]:
-    """Resolve each bracket slot key to the team currently filling it, based on
-    the live standings (1st/2nd of each group + the 8 best third-placed teams).
-    Used to draw a projected bracket before the knockouts are decided.
-    """
+    """Resolve each bracket slot to the team currently filling it, from the live
+    standings (1st/2nd of each group + the 8 best third-placed teams), using the
+    official layout and confederation-aware third-place assignment."""
     tables = compute_all_groups(fixtures)
-    out: dict[tuple, str] = {}
-    thirds: list[TeamRow] = []
+    winners, runners, thirds = {}, {}, []
     for g, rows in tables.items():
-        out[("W", g)] = rows[0].team
-        out[("R", g)] = rows[1].team
-        thirds.append(rows[2])
-    thirds.sort(key=_sort_key)
-    for k, row in enumerate(thirds[:8]):
-        out[("T", k)] = row.team
-    return out
+        winners[g] = rows[0].team
+        runners[g] = rows[1].team
+        thirds.append((rows[2].team, g, _third_strength(rows[2])))
+    thirds.sort(key=lambda e: -e[2])
+    return bracket.build_slot_teams(winners, runners, thirds[:8])
 
 
 def expected_standings(fixtures: list[dict], power=power_of) -> dict[str, list[tuple]]:
@@ -148,13 +149,11 @@ def expected_standings(fixtures: list[dict], power=power_of) -> dict[str, list[t
 def project_qualifiers_expected(fixtures: list[dict], power=power_of) -> dict[tuple, str]:
     """Bracket slot→team mapping from the odds-projected final standings."""
     tables = expected_standings(fixtures, power)
-    out: dict[tuple, str] = {}
-    thirds: list[tuple] = []
+    winners, runners, thirds = {}, {}, []
     for g, rows in tables.items():
-        out[("W", g)] = rows[0][0]
-        out[("R", g)] = rows[1][0]
-        thirds.append(rows[2])
-    thirds.sort(key=lambda r: (-r[1], -r[2], -r[3]))
-    for k, row in enumerate(thirds[:8]):
-        out[("T", k)] = row[0]
-    return out
+        winners[g] = rows[0][0]
+        runners[g] = rows[1][0]
+        t = rows[2]  # (team, pts, gd, gf)
+        thirds.append((t[0], g, t[1] * 1e6 + t[2] * 1e3 + t[3]))
+    thirds.sort(key=lambda e: -e[2])
+    return bracket.build_slot_teams(winners, runners, thirds[:8])

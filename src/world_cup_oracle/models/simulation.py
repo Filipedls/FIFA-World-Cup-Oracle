@@ -175,43 +175,41 @@ def run(fixtures: list[dict], n_sims: int = DEFAULT_SIMULATIONS) -> SimulationRe
         # 3 group games are always played; add expected knockout games
         expected_games[t] = 3.0 + float(games[i].mean())
 
+    team_group = {t: g for g, members in groups.items() for t in members}
     ml_slots = _most_likely_slots(group_letters, winners, runners,
-                                  qualifying_thirds, teams, n_teams)
+                                  qualifying_thirds, teams, n_teams, team_group)
     return SimulationResult(stage_probs, expected_games, n_sims, ml_slots)
 
 
 def _most_likely_slots(group_letters, winners, runners, qualifying_thirds,
-                       teams, n_teams) -> dict[tuple, str]:
-    """Pick each bracket slot's most-frequent occupant across simulations:
-    the modal group winner, modal runner-up, and the 8 most-frequent
-    third-place qualifiers."""
-    slots: dict[tuple, str] = {}
+                       teams, n_teams, team_group) -> dict[tuple, str]:
+    """Pick each bracket slot's most-frequent occupant across simulations: the
+    modal group winner, modal runner-up, and the 8 most-frequent third-place
+    qualifiers, then route them through the official confederation-aware layout."""
+    winners_by_group: dict[str, str] = {}
+    runners_by_group: dict[str, str] = {}
     chosen: set[str] = set()
     for g in group_letters:
-        w_idx = int(np.bincount(winners[g], minlength=n_teams).argmax())
-        w_team = teams[w_idx]
-        slots[("W", g)] = w_team
-        # most-frequent runner-up that isn't the winner pick
+        w_team = teams[int(np.bincount(winners[g], minlength=n_teams).argmax())]
+        winners_by_group[g] = w_team
         for r_idx in np.argsort(-np.bincount(runners[g], minlength=n_teams)):
             if teams[int(r_idx)] != w_team:
-                slots[("R", g)] = teams[int(r_idx)]
+                runners_by_group[g] = teams[int(r_idx)]
                 break
-        chosen.update({slots[("W", g)], slots[("R", g)]})
+        chosen.update({winners_by_group[g], runners_by_group.get(g)})
 
     third_counts = np.zeros(n_teams)
     for arr in qualifying_thirds:
         third_counts += np.bincount(arr, minlength=n_teams)
-    k = 0
+    thirds: list[tuple] = []
     for i in np.argsort(-third_counts):
         team = teams[int(i)]
-        if team in chosen:
+        if team in chosen or team not in team_group:
             continue
-        slots[("T", k)] = team
-        chosen.add(team)
-        k += 1
-        if k >= THIRD_PLACE_QUALIFIERS:
+        thirds.append((team, team_group[team], float(third_counts[int(i)])))
+        if len(thirds) >= THIRD_PLACE_QUALIFIERS:
             break
-    return slots
+    return bracket.build_slot_teams(winners_by_group, runners_by_group, thirds)
 
 
 def _two_way(power_a: np.ndarray, power_b: np.ndarray) -> np.ndarray:

@@ -21,6 +21,17 @@ def standings_dataframe(rows: list[TeamRow]) -> pd.DataFrame:
     return df
 
 
+def expected_standings_dataframe(rows: list[tuple]) -> pd.DataFrame:
+    """Projected final table from ``expected_standings`` rows:
+    (team, exp_points, exp_gd, exp_gf)."""
+    df = pd.DataFrame(
+        [{"Team": t, "Pts": round(pts, 1), "GD": round(gd, 1), "GF": round(gf, 1)}
+         for (t, pts, gd, gf) in rows])
+    df.index = range(1, len(df) + 1)
+    df.index.name = "#"
+    return df
+
+
 def style_standings(df: pd.DataFrame):
     """Return a pandas Styler colouring qualification zones."""
     def row_style(row):

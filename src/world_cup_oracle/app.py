@@ -4,7 +4,9 @@ Run with:  streamlit run src/world_cup_oracle/app.py
 """
 from __future__ import annotations
 
+import os
 import sys
+import zoneinfo
 from datetime import datetime
 from pathlib import Path
 
@@ -14,7 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pandas as pd
 import streamlit as st
 
-from world_cup_oracle.config import DEFAULT_SIMULATIONS, STAGE_LABELS
+from world_cup_oracle import timeutil
+from world_cup_oracle.config import (API_KEY_ENV, CACHE_ENABLED, DATA_SOURCE,
+                                     DEFAULT_SIMULATIONS, DEFAULT_TIMEZONE,
+                                     ODDS_API_KEY_ENV, STAGE_LABELS)
 from world_cup_oracle.data import cache
 from world_cup_oracle.data.loader import load_dataset
 from world_cup_oracle.models import simulation
@@ -22,18 +27,37 @@ from world_cup_oracle.models.odds import implied_from_decimal, probs_from_power
 from world_cup_oracle.models.ratings import compute_ratings, power_func
 from world_cup_oracle.models.scorers import project_scorers
 from world_cup_oracle.models.standings import (compute_all_groups,
+                                               expected_standings,
                                                project_qualifiers,
                                                project_qualifiers_expected)
 from world_cup_oracle.models.stats import compute_stats
 from world_cup_oracle.viz import bracket as bracket_viz
-from world_cup_oracle.viz.standings import standings_dataframe, style_standings
+from world_cup_oracle.viz.standings import (expected_standings_dataframe,
+                                            standings_dataframe, style_standings)
 
 st.set_page_config(page_title="World Cup 2026 Oracle", page_icon="🏆", layout="wide")
 
 
-@st.cache_data(ttl=300, show_spinner="Loading World Cup data…")
-def get_data() -> dict:
-    return load_dataset()
+def _default_cfg() -> dict:
+    """Initial API config — defaults come from the environment / .env."""
+    return {
+        "source": (DATA_SOURCE or "worldcup26"),
+        "api_key": os.getenv(API_KEY_ENV, "") or "",
+        "odds_key": os.getenv(ODDS_API_KEY_ENV, "") or "",
+    }
+
+
+def _load_with_cfg(cfg: dict) -> dict:
+    return load_dataset(source=cfg["source"],
+                        api_key=cfg["api_key"] or None,
+                        odds_key=cfg["odds_key"] or None)
+
+
+def _reload_data() -> None:
+    """Drop the in-session dataset + disk cache so the next run re-fetches."""
+    cache.invalidate()
+    st.session_state.pop("dataset", None)
+    st.rerun()
 
 
 @st.cache_data(show_spinner=False)
@@ -47,15 +71,9 @@ def match_probs(fx: dict, power):
     return probs_from_power(power(fx["home"]), power(fx["away"])), "model"
 
 
-def _fmt_kickoff(fx: dict) -> str:
-    ko = fx.get("kickoff")
-    if not ko:
-        return fx.get("date", "")
-    try:
-        dt = datetime.fromisoformat(ko)
-        return dt.strftime("%a %d %b · %H:%M")
-    except ValueError:
-        return fx.get("date", "")
+def _fmt_kickoff(fx: dict, tzname: str) -> str:
+    return timeutil.format_kickoff(fx.get("kickoff"), tzname,
+                                   fallback=fx.get("date", ""))
 
 
 def _fmt_fetched(ts: str | None) -> str:
@@ -67,8 +85,15 @@ def _fmt_fetched(ts: str | None) -> str:
         return ts
 
 
-# ---------------------------------------------------------------------------
-data = get_data()
+# --- config + data, both held in session state ------------------------------
+if "cfg" not in st.session_state:
+    st.session_state.cfg = _default_cfg()           # defaults from .env / env
+st.session_state.setdefault("tz", DEFAULT_TIMEZONE)  # display timezone (kickoffs)
+if "dataset" not in st.session_state:               # the in-session data "cache"
+    with st.spinner("Loading World Cup data…"):
+        st.session_state.dataset = _load_with_cfg(st.session_state.cfg)
+
+data = st.session_state.dataset
 fixtures = data["fixtures"]
 # data-driven team strength (bookmaker odds + results + prior), used by the
 # bracket favourite/hover and the model-based match probabilities.
@@ -81,9 +106,7 @@ with header_l:
 with header_r:
     if st.button("🔄 Refresh data", width='stretch',
                  help="Force a re-fetch from the API and clear caches."):
-        cache.invalidate()
-        st.cache_data.clear()
-        st.rerun()
+        _reload_data()
 
 st.caption(
     f"Data source: **{data['source']}** · as of **{data.get('as_of', '—')}** · "
@@ -95,9 +118,8 @@ if data.get("odds_note"):
     st.caption(f"💰 {data['odds_note']}")
 if data["source"] == "sample":
     st.info(
-        "Running on the built-in **sample dataset** (no API key found). Set "
-        "`WORLD_CUP_API_KEY` in a `.env` file to pull live fixtures, odds and "
-        "scorers from API-Football.",
+        "Running on the built-in **sample dataset**. Open the **⚙️ Config** tab "
+        "to choose a data source and add API keys (or set them in a `.env` file).",
         icon="ℹ️",
     )
 
@@ -119,9 +141,10 @@ with st.sidebar:
 with st.spinner(f"🎲 Running {n_sims:,} tournament simulations…"):
     sim = get_simulation(fixtures, n_sims)
 
-tab_stats, tab_groups, tab_bracket, tab_matches, tab_scorers, tab_probs = st.tabs(
+(tab_stats, tab_groups, tab_bracket, tab_matches, tab_scorers, tab_probs,
+ tab_config) = st.tabs(
     ["📈 Stats", "📊 Groups", "🗺️ Bracket", "🎲 Matches & Odds", "⚽ Scorers",
-     "🔮 Advancement"]
+     "🔮 Advancement", "⚙️ Config"]
 )
 
 # --- Tournament stats -------------------------------------------------------
@@ -177,18 +200,38 @@ with tab_stats:
 # --- Groups -----------------------------------------------------------------
 with tab_groups:
     st.subheader("Group standings")
+    predicted = st.toggle(
+        "Predicted final standings (from odds)",
+        help="Finished games count their real result; unplayed games add "
+             "expected points from the match odds (Pts/GD/GF are expected values).",
+    )
     st.caption("🟩 top 2 advance · 🟫 3rd place (best 8 across groups advance)")
-    tables = compute_all_groups(fixtures)
+
     cols = st.columns(2)
-    for i, (group, rows) in enumerate(tables.items()):
-        with cols[i % 2]:
-            st.markdown(f"**Group {group}**")
-            df = standings_dataframe(rows)
-            st.dataframe(style_standings(df), width='stretch')
+    if predicted:
+        tables = expected_standings(fixtures, power)
+        fmt = {"Pts": "{:.1f}", "GD": "{:+.1f}", "GF": "{:.1f}"}
+        for i, (group, rows) in enumerate(tables.items()):
+            with cols[i % 2]:
+                st.markdown(f"**Group {group}**")
+                df = expected_standings_dataframe(rows)
+                st.dataframe(style_standings(df).format(fmt), width='stretch')
+    else:
+        tables = compute_all_groups(fixtures)
+        for i, (group, rows) in enumerate(tables.items()):
+            with cols[i % 2]:
+                st.markdown(f"**Group {group}**")
+                df = standings_dataframe(rows)
+                st.dataframe(style_standings(df), width='stretch')
 
 # --- Bracket ----------------------------------------------------------------
 with tab_bracket:
     st.subheader("Knockout bracket")
+    st.caption(
+        "Round-of-32 pairings follow FIFA's **official 2026 bracket**; the eight "
+        "third-placed teams are slotted by their official eligibility sets, "
+        "minimising same-confederation clashes."
+    )
     SRC_STANDINGS = "Current standings"
     SRC_ODDS = "Odds-projected final standings"
     SRC_MONTECARLO = "Monte Carlo (most-likely)"
@@ -251,7 +294,7 @@ with tab_matches:
         score = (f"{f['home_goals']}–{f['away_goals']}"
                  if f["status"] == "FT" else "")
         rows.append({
-            "Kickoff": _fmt_kickoff(f),
+            "Kickoff": _fmt_kickoff(f, st.session_state["tz"]),
             "Stage": f["stage"],
             "Group": f.get("group") or "",
             "Team A (home)": f["home"],
@@ -317,3 +360,69 @@ with tab_probs:
     champ = champ.set_index("Team")
     st.bar_chart(champ, horizontal=True)
     st.caption(f"Based on {sim.n_sims:,} simulated tournaments.")
+
+# --- Config -----------------------------------------------------------------
+with tab_config:
+    st.subheader("Data source & API keys")
+    st.caption(
+        "Stored in this browser **session** only (never written to disk). "
+        "Defaults are loaded from a `.env` file if present. Saving re-fetches the data."
+    )
+    cfg = st.session_state.cfg
+    _SOURCES = ["worldcup26", "balldontlie", "api_football"]
+    src_help = ("worldcup26 — free, no key · balldontlie — needs a paid key · "
+                "api_football — needs a key (free tier excludes 2026)")
+
+    with st.form("config_form"):
+        cur = cfg["source"].replace("-", "_")
+        source_sel = st.selectbox(
+            "Base data source (fixtures / standings / scorers)", _SOURCES,
+            index=_SOURCES.index(cur) if cur in _SOURCES else 0, help=src_help)
+        api_key_in = st.text_input(
+            "Base source API key (WORLD_CUP_API_KEY)", value=cfg["api_key"],
+            type="password", help="Only needed for balldontlie / api_football.")
+        odds_key_in = st.text_input(
+            "The Odds API key (THE_ODDS_API_KEY)", value=cfg["odds_key"],
+            type="password", help="Optional. Adds real betting odds on top of the base source.")
+        saved = st.form_submit_button("💾 Save & reload", type="primary")
+
+    if saved:
+        st.session_state.cfg = {
+            "source": source_sel,
+            "api_key": api_key_in.strip(),
+            "odds_key": odds_key_in.strip(),
+        }
+        _reload_data()
+
+    if st.button("↩️ Reset to .env defaults"):
+        st.session_state.cfg = _default_cfg()
+        _reload_data()
+
+    st.divider()
+    st.markdown("**Display**")
+    _zones = sorted(zoneinfo.available_timezones())
+    if st.session_state["tz"] not in _zones:
+        _zones.insert(0, st.session_state["tz"])
+    st.selectbox(
+        "Timezone (kickoff times)", _zones, key="tz",
+        index=_zones.index(st.session_state["tz"]),
+        help="All match kickoff times are shown in this timezone. Applies instantly.",
+    )
+
+    st.divider()
+    st.markdown("**Current session status**")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Active source", data["source"])
+    c2.metric("Base key", "set ✓" if cfg["api_key"] else "—")
+    c3.metric("Odds key", "set ✓" if cfg["odds_key"] else "—")
+    st.caption(
+        f"Last fetched: **{_fmt_fetched(data.get('_fetched_at'))}** · "
+        f"{data.get('odds_note', 'no odds overlay')}"
+    )
+    cache_state = "enabled" if CACHE_ENABLED else "disabled"
+    st.caption(
+        f"💾 Disk cache: **{cache_state}** (set `WORLD_CUP_CACHE_ENABLED=true` in "
+        "`.env` to enable across sessions; data is always held for this session)."
+    )
+    if data.get("warning"):
+        st.warning(data["warning"])

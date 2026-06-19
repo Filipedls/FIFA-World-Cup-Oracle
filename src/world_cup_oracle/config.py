@@ -49,6 +49,13 @@ ODDS_BOOKMAKER_ID = int(os.getenv("WORLD_CUP_BOOKMAKER_ID", "8"))
 CACHE_DIR = Path(os.getenv("WORLD_CUP_CACHE_DIR", str(Path(__file__).resolve().parents[2] / ".cache")))
 CACHE_TTL_SECONDS = int(os.getenv("WORLD_CUP_CACHE_TTL", "600"))
 MATCH_DURATION_MINUTES = 115  # 90' + stoppage; beyond this a kickoff has "ended"
+# Disk cache is OFF unless explicitly enabled via env (default false if absent).
+CACHE_ENABLED = os.getenv("WORLD_CUP_CACHE_ENABLED", "false").strip().lower() in (
+    "1", "true", "yes", "on")
+
+# --- Display -----------------------------------------------------------------
+# Default timezone for kickoff times (overridable per-session in the Config tab).
+DEFAULT_TIMEZONE = os.getenv("WORLD_CUP_TIMEZONE", "UTC")
 
 # --- Tournament format -------------------------------------------------------
 # 48 teams, 12 groups of 4. Top 2 of each group + 8 best third-placed teams
