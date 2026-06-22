@@ -36,6 +36,29 @@ _TYPE_TO_STAGE = {
 # strip braces and the various (curly/straight) double-quote characters
 _STRIP_CHARS = "{}\"“”„‟"
 
+# worldcup26 'local_date' is the VENUE-local kickoff time, so it must be
+# interpreted in the stadium's timezone before converting to UTC. Map the host
+# city to its IANA zone (Mexico has no DST since 2022).
+_CITY_TZ = {
+    "seattle": "America/Los_Angeles", "los angeles": "America/Los_Angeles",
+    "san francisco bay area": "America/Los_Angeles", "vancouver": "America/Vancouver",
+    "houston": "America/Chicago", "dallas": "America/Chicago",
+    "kansas city": "America/Chicago", "atlanta": "America/New_York",
+    "miami": "America/New_York", "boston": "America/New_York",
+    "philadelphia": "America/New_York", "new york/new jersey": "America/New_York",
+    "toronto": "America/Toronto", "mexico city": "America/Mexico_City",
+    "guadalajara": "America/Mexico_City", "monterrey": "America/Monterrey",
+}
+# fallback by worldcup26 stadium id, if the /stadiums lookup is unavailable
+_STADIUM_TZ_BY_ID = {
+    "1": "America/Mexico_City", "2": "America/Mexico_City", "3": "America/Monterrey",
+    "4": "America/Chicago", "5": "America/Chicago", "6": "America/Chicago",
+    "7": "America/New_York", "8": "America/New_York", "9": "America/New_York",
+    "10": "America/New_York", "11": "America/New_York", "12": "America/Toronto",
+    "13": "America/Vancouver", "14": "America/Los_Angeles",
+    "15": "America/Los_Angeles", "16": "America/Los_Angeles",
+}
+
 
 class WorldCup26Error(RuntimeError):
     pass
@@ -54,14 +77,44 @@ def _get(path: str) -> dict:
     raise WorldCup26Error(f"{path} failed after {_RETRIES} tries: {last}")
 
 
-def _kickoff_and_date(local_date: str) -> tuple[str | None, str]:
-    """'06/11/2026 13:00' -> ('2026-06-11T13:00:00', '2026-06-11')."""
+def _stadium_timezones() -> dict[str, str]:
+    """stadium id -> IANA timezone, from the /stadiums endpoint (city), with a
+    hard-coded id fallback if the lookup fails."""
     try:
-        from datetime import datetime
+        stadiums = _get("/get/stadiums").get("stadiums", [])
+    except WorldCup26Error:
+        return dict(_STADIUM_TZ_BY_ID)
+    out: dict[str, str] = {}
+    for s in stadiums:
+        sid = str(s.get("id"))
+        city = (s.get("city_en") or "").split("(")[0].strip().lower()
+        tz = _CITY_TZ.get(city) or _STADIUM_TZ_BY_ID.get(sid)
+        if tz:
+            out[sid] = tz
+    for sid, tz in _STADIUM_TZ_BY_ID.items():
+        out.setdefault(sid, tz)
+    return out
+
+
+def _kickoff_and_date(local_date: str, tzname: str | None) -> tuple[str | None, str]:
+    """Venue-local 'MM/DD/YYYY HH:MM' -> (UTC ISO kickoff, venue-local date).
+
+    The time is localised in the stadium's timezone, then converted to UTC so
+    the rest of the app can render it in any display timezone.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    try:
         dt = datetime.strptime(local_date.strip(), "%m/%d/%Y %H:%M")
-        return dt.isoformat(), dt.strftime("%Y-%m-%d")
     except (ValueError, AttributeError):
         return None, (local_date or "")[:10]
+    date = dt.strftime("%Y-%m-%d")          # the calendar day at the venue
+    if tzname:
+        try:
+            dt = dt.replace(tzinfo=ZoneInfo(tzname)).astimezone(ZoneInfo("UTC"))
+        except Exception:                    # noqa: BLE001 - unknown zone -> naive
+            pass
+    return dt.isoformat(), date
 
 
 def _parse_scorers(raw: str | None) -> list[str]:
@@ -94,6 +147,7 @@ def get_dataset(as_of: str) -> dict:
     from ..teams import canonical_name
 
     games = _get("/get/games").get("games", [])
+    stadium_tz = _stadium_timezones()
     fixtures: list[dict] = []
     goals: dict[tuple[str, str], int] = {}
 
@@ -103,7 +157,8 @@ def get_dataset(as_of: str) -> dict:
         if not home or not away:
             continue  # undecided knockout slot
         finished = str(g.get("finished", "")).upper() == "TRUE"
-        kickoff, date = _kickoff_and_date(g.get("local_date", ""))
+        tzname = stadium_tz.get(str(g.get("stadium_id")))
+        kickoff, date = _kickoff_and_date(g.get("local_date", ""), tzname)
         gtype = (g.get("type") or "group").lower()
         stage = _TYPE_TO_STAGE.get(gtype, gtype)
         fixtures.append({

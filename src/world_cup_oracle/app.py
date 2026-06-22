@@ -71,11 +71,6 @@ def match_probs(fx: dict, power):
     return probs_from_power(power(fx["home"]), power(fx["away"])), "model"
 
 
-def _fmt_kickoff(fx: dict, tzname: str) -> str:
-    return timeutil.format_kickoff(fx.get("kickoff"), tzname,
-                                   fallback=fx.get("date", ""))
-
-
 def _fmt_fetched(ts: str | None) -> str:
     if not ts:
         return "—"
@@ -284,8 +279,9 @@ with tab_matches:
     groups_avail = sorted({f["group"] for f in fixtures if f.get("group")})
     group_sel = c2.selectbox("Group", ["All"] + groups_avail)
 
+    tz = st.session_state["tz"]
     rows = []
-    for f in sorted(fixtures, key=lambda x: (x["date"], x["id"])):
+    for f in sorted(fixtures, key=lambda x: (x.get("kickoff") or x["date"], x["id"])):
         if stage_sel != "All" and f["stage"] != stage_sel:
             continue
         if group_sel != "All" and f.get("group") != group_sel:
@@ -293,8 +289,11 @@ with tab_matches:
         probs, src = match_probs(f, power)
         score = (f"{f['home_goals']}–{f['away_goals']}"
                  if f["status"] == "FT" else "")
+        ko = timeutil.to_timezone(f.get("kickoff"), tz)
         rows.append({
-            "Kickoff": _fmt_kickoff(f, st.session_state["tz"]),
+            # real datetime (naive wall-clock in the display tz) so the column
+            # sorts chronologically instead of alphabetically by weekday
+            "Kickoff": ko.replace(tzinfo=None) if ko else None,
             "Stage": f["stage"],
             "Group": f.get("group") or "",
             "Team A (home)": f["home"],
@@ -309,6 +308,8 @@ with tab_matches:
     st.dataframe(
         df, width='stretch', hide_index=True,
         column_config={
+            "Kickoff": st.column_config.DatetimeColumn(
+                "Kickoff", format="ddd DD MMM · HH:mm"),
             "P(A win)": st.column_config.ProgressColumn(
                 "P(A win)", format="%.0f%%", min_value=0, max_value=100),
             "P(draw)": st.column_config.NumberColumn("P(draw)", format="%.0f%%"),
@@ -316,7 +317,10 @@ with tab_matches:
                 "P(B win)", format="%.0f%%", min_value=0, max_value=100),
         },
     )
-    st.caption("`market` = vig-removed bookmaker odds · `model` = Poisson power model (no odds yet)")
+    st.caption(
+        f"Kickoff times in **{tz}** · `market` = vig-removed bookmaker odds · "
+        "`model` = Poisson power model (no odds yet)"
+    )
 
 # --- Scorers ----------------------------------------------------------------
 with tab_scorers:
